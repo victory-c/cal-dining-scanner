@@ -1,0 +1,28 @@
+name: Daily Dining Menu Scan
+
+on:
+  schedule:
+    # Runs at 7:00 AM Pacific Time (14:00 UTC during PDT, 15:00 UTC during PST)
+    - cron: "0 14 * * *"
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Cal Dining Scanner
+        env:
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python cal_dining_scanner.py

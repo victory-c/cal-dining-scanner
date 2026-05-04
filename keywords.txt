@@ -1,0 +1,12 @@
+# Cal Dining Food Keywords
+# Add one keyword per line (case-insensitive matching)
+# Lines starting with # are ignored
+# Example:
+pizza
+sushi
+chicken tikka
+pho
+clam chowder
+wings
+ 
+

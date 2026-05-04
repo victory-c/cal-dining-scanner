@@ -1,0 +1,26 @@
+# Cal Dining Scanner Configuration
+
+# Your email address for notifications
+email: "victorchun@berkeley.edu"
+
+# Dining halls to monitor
+locations:
+  - "Crossroads"
+  - "Foothill"
+  - "Clark Kerr"
+
+# Meal periods to check
+meals:
+  - "Breakfast"
+  - "Lunch"
+  - "Dinner"
+
+# Path to keywords file (relative to project root)
+keywords_file: "keywords.txt"
+
+# SMTP settings for sending email (uses Gmail SMTP by default)
+# Set GMAIL_APP_PASSWORD as an environment variable or GitHub secret
+smtp:
+  server: "smtp.gmail.com"
+  port: 587
+  sender_email: "victorchun@berkeley.edu"
