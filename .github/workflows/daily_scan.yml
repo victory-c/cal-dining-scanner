@@ -1,10 +1,11 @@
-name: Daily Dining Menu Scan
+name: Dining Menu Alerts
 
 on:
   schedule:
-    # Runs at 7:00 AM Pacific Time (14:00 UTC during PDT, 15:00 UTC during PST)
-    - cron: "0 14 * * *"
-  workflow_dispatch: # Allow manual trigger
+    # GitHub Actions cron is UTC and cannot read user config directly.
+    # Run periodically; the scanner decides whether the user's local schedule is due.
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
 
 jobs:
   scan:
@@ -19,10 +20,30 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Restore scanner state
+        uses: actions/cache@v4
+        with:
+          path: .cal_dining_scanner_state.json
+          key: scanner-state-${{ github.run_id }}
+          restore-keys: |
+            scanner-state-
+
       - name: Install dependencies
         run: pip install -r requirements.txt
 
       - name: Run Cal Dining Scanner
         env:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-        run: python cal_dining_scanner.py
+          ALERT_EMAIL: ${{ vars.ALERT_EMAIL }}
+          KEYWORDS: ${{ vars.KEYWORDS }}
+          LOCATIONS: ${{ vars.LOCATIONS }}
+          MEALS: ${{ vars.MEALS }}
+          SCHEDULE_TIMEZONE: ${{ vars.SCHEDULE_TIMEZONE }}
+          SCHEDULE_TIMES: ${{ vars.SCHEDULE_TIMES }}
+          SCHEDULE_DAYS: ${{ vars.SCHEDULE_DAYS }}
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            python3 cal_dining_scanner.py --scheduled
+          else
+            python3 cal_dining_scanner.py --run-now
+          fi

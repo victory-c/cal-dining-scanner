@@ -1,28 +1,44 @@
 # Cal Dining Scanner
 
-Automatically scans [UC Berkeley Dining menus](https://dining.berkeley.edu/menus/) for foods you like and sends you an email alert with locations and meal periods.
+Automatically scans [UC Berkeley Dining menus](https://dining.berkeley.edu/menus/) for foods you like and sends an email alert with locations and meal periods.
 
 ## How It Works
 
-1. Scrapes the daily menu from `dining.berkeley.edu/menus/`
-2. Matches menu items against your keyword list (case-insensitive, partial match)
-3. Sends an HTML email with matched foods organized by dining hall and meal period
+1. Scrapes the current Cal Dining menu page.
+2. Extracts food items by dining hall and meal period.
+3. Matches menu items against your keywords.
+4. Sends an HTML email when matches are found.
 
-## Setup
-
-### 1. Clone and install
+## Quick Start
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/cal-dining-scanner.git
+git clone https://github.com/victory-c/cal-dining-scanner.git
 cd cal-dining-scanner
 pip install -r requirements.txt
+cp config.example.yaml config.yaml
 ```
 
-### 2. Configure your keywords
+Edit `config.yaml`:
 
-Edit `keywords.txt` — one food per line:
-
+```yaml
+email: "you@example.com"
+locations:
+  - "Crossroads"
+  - "Foothill"
+  - "Clark Kerr"
+meals:
+  - "Breakfast"
+  - "Lunch"
+  - "Dinner"
+schedule:
+  timezone: "America/Los_Angeles"
+  times: ["07:00"]
+  days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 ```
+
+Edit `keywords.txt`, one food per line:
+
+```text
 pizza
 sushi
 chicken tikka
@@ -31,59 +47,122 @@ clam chowder
 wings
 ```
 
-Lines starting with `#` are ignored.
-
-### 3. Configure dining halls
-
-Edit `config.yaml` to set your email and which dining halls to monitor:
-
-```yaml
-email: "you@berkeley.edu"
-locations:
-  - "Crossroads"
-  - "Foothill"
-  - "Clark Kerr"
-```
-
-### 4. Set up Gmail App Password
-
-1. Go to [Google App Passwords](https://myaccount.google.com/apppasswords)
-2. Generate a new app password for "Mail"
-3. Set it as an environment variable:
+Set your Gmail app password:
 
 ```bash
 export GMAIL_APP_PASSWORD="your_app_password_here"
 ```
 
-### 5. Run it
+Generate the password at [Google App Passwords](https://myaccount.google.com/apppasswords). Your Gmail account must have 2-Step Verification enabled.
+
+## Run Modes
+
+Preview matches without sending email:
 
 ```bash
-python cal_dining_scanner.py
+python3 cal_dining_scanner.py --dry-run
 ```
 
-## Automated Daily Runs (GitHub Actions)
+Run immediately and send an email if matches are found:
 
-This repo includes a GitHub Actions workflow that runs the scanner daily at 7:00 AM Pacific.
+```bash
+python3 cal_dining_scanner.py --run-now
+```
 
-To enable it:
+Run only if your configured schedule is due:
 
-1. Push this repo to GitHub
-2. Go to **Settings → Secrets and variables → Actions**
-3. Add a secret: `GMAIL_APP_PASSWORD` with your Gmail app password
-4. The workflow runs automatically every morning, or trigger it manually from the **Actions** tab
+```bash
+python3 cal_dining_scanner.py --scheduled
+```
+
+Running `python3 cal_dining_scanner.py` without a mode is the same as `--run-now`.
+
+## Schedule Examples
+
+Every day at 7 AM Pacific:
+
+```yaml
+schedule:
+  timezone: "America/Los_Angeles"
+  times: ["07:00"]
+  days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+```
+
+Weekdays only at 8:30 AM Eastern:
+
+```yaml
+schedule:
+  timezone: "America/New_York"
+  times: ["08:30"]
+  days: ["mon", "tue", "wed", "thu", "fri"]
+```
+
+Check around lunch and dinner:
+
+```yaml
+schedule:
+  timezone: "America/Los_Angeles"
+  times: ["11:30", "17:30"]
+  days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+```
+
+Manual-only mode: do not enable the scheduled GitHub Action; run `--dry-run` or `--run-now` yourself whenever you want.
+
+## GitHub Actions Setup
+
+The included workflow runs every 15 minutes. The script checks your configured local schedule and sends at most once per scheduled slot. This avoids editing UTC cron by hand and handles daylight saving time through your configured timezone.
+
+In your fork, add this secret:
+
+- `GMAIL_APP_PASSWORD`: your Gmail app password
+
+Add these repository variables under **Settings -> Secrets and variables -> Actions -> Variables**:
+
+- `ALERT_EMAIL`: where alerts should be sent
+- `KEYWORDS`: comma-separated or newline-separated foods, for example `pizza,sushi,clam chowder`
+- `LOCATIONS`: optional, for example `Crossroads,Foothill,Clark Kerr`
+- `MEALS`: optional, for example `Breakfast,Lunch,Dinner`
+- `SCHEDULE_TIMEZONE`: for example `America/Los_Angeles`
+- `SCHEDULE_TIMES`: comma-separated local times, for example `07:00` or `11:30,17:30`
+- `SCHEDULE_DAYS`: optional, for example `mon,tue,wed,thu,fri`
+
+You can also commit your own private `config.yaml` in a private fork, but the public repo ignores it by default so personal emails and schedules do not leak.
+
+## Environment Overrides
+
+Environment variables override `config.yaml`. This is useful for GitHub Actions and local experiments:
+
+```bash
+ALERT_EMAIL="you@example.com" \
+KEYWORDS="pizza,clam chowder" \
+LOCATIONS="Crossroads,Foothill" \
+MEALS="Lunch,Dinner" \
+SCHEDULE_TIMEZONE="America/Los_Angeles" \
+SCHEDULE_TIMES="11:30,17:30" \
+python3 cal_dining_scanner.py --dry-run
+```
+
+## Testing
+
+```bash
+python3 -m unittest discover -s tests
+```
+
+## Notes
+
+Menus can change due to availability or supplier delays. This tool is intended for convenience, not for allergy or medical decisions. Always check posted dining hall signage for current allergen information.
 
 ## Project Structure
 
-```
+```text
 cal-dining-scanner/
-├── cal_dining_scanner.py    # Main scanner script
-├── config.yaml              # Configuration (email, locations, meals)
-├── keywords.txt             # Your food keywords (edit this!)
-├── requirements.txt         # Python dependencies
-├── .env.example             # Environment variable template
+├── cal_dining_scanner.py
+├── config.example.yaml
+├── keywords.txt
+├── requirements.txt
+├── tests/
 ├── .github/
 │   └── workflows/
-│       └── daily_scan.yml   # GitHub Actions daily workflow
 └── README.md
 ```
 

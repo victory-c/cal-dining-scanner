@@ -1,19 +1,26 @@
 #!/usr/bin/env python3
 """
 Cal Dining Scanner
-Scrapes UC Berkeley dining menus and sends email alerts
-when foods matching your keywords are being served.
+Scrapes UC Berkeley dining menus and sends email alerts when foods matching
+your keywords are being served.
 """
 
+from __future__ import annotations
+
+import argparse
+import html
+import json
+import logging
 import os
 import re
-import sys
 import smtplib
-import logging
-from email.mime.text import MIMEText
+from copy import deepcopy
+from datetime import date, datetime, time, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
-from datetime import datetime
+from email.mime.text import MIMEText
 from pathlib import Path
+from typing import Any, Callable
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 import yaml
@@ -27,27 +34,190 @@ log = logging.getLogger(__name__)
 
 MENU_URL = "https://dining.berkeley.edu/menus/"
 PROJECT_ROOT = Path(__file__).resolve().parent
+CONFIG_PATH = PROJECT_ROOT / "config.yaml"
+STATE_PATH = PROJECT_ROOT / ".cal_dining_scanner_state.json"
+
+DEFAULT_CONFIG: dict[str, Any] = {
+    "locations": ["Crossroads", "Foothill", "Clark Kerr"],
+    "meals": ["Breakfast", "Lunch", "Dinner"],
+    "keywords_file": "keywords.txt",
+    "schedule": {
+        "timezone": "America/Los_Angeles",
+        "times": ["07:00"],
+        "days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+        "window_minutes": 20,
+    },
+    "smtp": {
+        "server": "smtp.gmail.com",
+        "port": 587,
+    },
+}
+
+PLACEHOLDER_EMAILS = {"you@example.com", "your_email@example.com"}
+
+ENV_OVERRIDES = {
+    "ALERT_EMAIL": ("email", "scalar"),
+    "KEYWORDS": ("keywords", "list"),
+    "LOCATIONS": ("locations", "list"),
+    "MEALS": ("meals", "list"),
+    "SCHEDULE_TIMEZONE": ("schedule.timezone", "scalar"),
+    "SCHEDULE_TIMES": ("schedule.times", "list"),
+    "SCHEDULE_DAYS": ("schedule.days", "list"),
+    "SMTP_SERVER": ("smtp.server", "scalar"),
+    "SMTP_PORT": ("smtp.port", "int"),
+    "SMTP_SENDER_EMAIL": ("smtp.sender_email", "scalar"),
+}
+
+DAY_INDEX = {
+    "mon": 0,
+    "monday": 0,
+    "tue": 1,
+    "tues": 1,
+    "tuesday": 1,
+    "wed": 2,
+    "wednesday": 2,
+    "thu": 3,
+    "thur": 3,
+    "thurs": 3,
+    "thursday": 3,
+    "fri": 4,
+    "friday": 4,
+    "sat": 5,
+    "saturday": 5,
+    "sun": 6,
+    "sunday": 6,
+}
 
 
-def load_config() -> dict:
-    config_path = PROJECT_ROOT / "config.yaml"
-    with open(config_path) as f:
-        return yaml.safe_load(f)
+class ScannerError(RuntimeError):
+    """A user-fixable scanner error."""
 
 
-def load_keywords(config: dict) -> list[str]:
-    kw_path = PROJECT_ROOT / config.get("keywords_file", "keywords.txt")
-    keywords = []
-    with open(kw_path) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#"):
-                keywords.append(line.lower())
+def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = deepcopy(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def split_env_list(value: str) -> list[str]:
+    return [
+        item.strip()
+        for item in re.split(r"[\n,;]+", value)
+        if item.strip()
+    ]
+
+
+def set_nested(config: dict[str, Any], dotted_path: str, value: Any) -> None:
+    keys = dotted_path.split(".")
+    target = config
+    for key in keys[:-1]:
+        target = target.setdefault(key, {})
+    target[keys[-1]] = value
+
+
+def has_env_config() -> bool:
+    return any(os.environ.get(name, "").strip() for name in ENV_OVERRIDES)
+
+
+def apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
+    for env_name, (path, value_type) in ENV_OVERRIDES.items():
+        raw_value = os.environ.get(env_name, "").strip()
+        if not raw_value:
+            continue
+        if value_type == "list":
+            value: Any = split_env_list(raw_value)
+        elif value_type == "int":
+            try:
+                value = int(raw_value)
+            except ValueError as exc:
+                raise ScannerError(f"{env_name} must be an integer.") from exc
+        else:
+            value = raw_value
+        set_nested(config, path, value)
+    return config
+
+
+def load_config(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
+    config = deepcopy(DEFAULT_CONFIG)
+    if config_path.exists():
+        with open(config_path, encoding="utf-8") as f:
+            file_config = yaml.safe_load(f) or {}
+        if not isinstance(file_config, dict):
+            raise ScannerError(f"{config_path} must contain a YAML mapping.")
+        config = deep_merge(config, file_config)
+    elif not has_env_config():
+        raise ScannerError(
+            "No config.yaml found. Copy config.example.yaml to config.yaml, "
+            "or set ALERT_EMAIL and other GitHub Actions variables."
+        )
+    return apply_env_overrides(config)
+
+
+def normalize_list(value: Any, field_name: str) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        items = split_env_list(value)
+    elif isinstance(value, list):
+        items = [str(item).strip() for item in value if str(item).strip()]
+    else:
+        raise ScannerError(f"{field_name} must be a list or comma-separated string.")
+    return items
+
+
+def validate_config(config: dict[str, Any], *, require_email: bool) -> None:
+    config["locations"] = normalize_list(config.get("locations"), "locations")
+    config["meals"] = normalize_list(config.get("meals"), "meals")
+    if not config["locations"]:
+        raise ScannerError("At least one location must be configured.")
+    if not config["meals"]:
+        raise ScannerError("At least one meal period must be configured.")
+
+    email = str(config.get("email", "")).strip()
+    if require_email and (not email or email.lower() in PLACEHOLDER_EMAILS):
+        raise ScannerError(
+            "Missing alert email. Set your real email in config.yaml or ALERT_EMAIL "
+            "in GitHub variables."
+        )
+
+    smtp_cfg = config.setdefault("smtp", {})
+    if "sender_email" not in smtp_cfg and config.get("email"):
+        smtp_cfg["sender_email"] = config["email"]
+    try:
+        smtp_cfg["port"] = int(smtp_cfg.get("port", 587))
+    except ValueError as exc:
+        raise ScannerError("smtp.port must be an integer.") from exc
+
+    validate_schedule(config.get("schedule", {}))
+
+
+def load_keywords(config: dict[str, Any]) -> list[str]:
+    configured_keywords = normalize_list(config.get("keywords"), "keywords")
+    if configured_keywords:
+        keywords = configured_keywords
+    else:
+        kw_path = PROJECT_ROOT / str(config.get("keywords_file", "keywords.txt"))
+        if not kw_path.exists():
+            raise ScannerError(
+                f"No keywords found. Create {kw_path.name} or set KEYWORDS."
+            )
+        keywords = []
+        with open(kw_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    keywords.append(line)
+
+    keywords = [keyword.lower() for keyword in dict.fromkeys(keywords)]
     log.info("Loaded %d keywords: %s", len(keywords), keywords)
     return keywords
 
 
-def fetch_menu_html() -> str:
+def fetch_menu_html(menu_url: str = MENU_URL) -> str:
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -55,213 +225,161 @@ def fetch_menu_html() -> str:
             "Chrome/125.0.0.0 Safari/537.36"
         )
     }
-    resp = requests.get(MENU_URL, headers=headers, timeout=30)
+    resp = requests.get(menu_url, headers=headers, timeout=30)
     resp.raise_for_status()
     log.info("Fetched menu page (%d bytes)", len(resp.text))
     return resp.text
 
 
-def parse_menus(html: str, target_locations: list[str]) -> dict:
+def normalize_key(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip().lower()
+
+
+def normalize_meal_name(label: str) -> str | None:
+    for meal in ["Breakfast", "Lunch", "Dinner", "All Day"]:
+        if re.search(rf"\b{re.escape(meal)}\b", label, re.IGNORECASE):
+            return meal
+    return None
+
+
+def parse_menus(
+    html_text: str,
+    target_locations: list[str],
+    target_meals: list[str] | None = None,
+) -> dict[str, dict[str, list[str]]]:
     """
-    Parse the dining menu HTML and return a nested dict:
+    Parse the Cal Dining menu HTML.
+
+    Returns:
     {
         "Crossroads": {
-            "Breakfast": ["item1", "item2", ...],
-            "Lunch": [...],
-            "Dinner": [...]
-        },
-        ...
+            "Breakfast": ["item1", "item2"],
+            "Lunch": ["item3"],
+        }
     }
     """
-    soup = BeautifulSoup(html, "html.parser")
-    menus = {}
-
-    # The dining page uses location headings followed by meal-period accordions.
-    # We look for location blocks (h2/h3 with location names) and then collect
-    # meal sections and their menu items underneath.
-
-    # Strategy: walk through all text content and use structural cues
-    # to identify locations and meal periods.
-    location_targets = [loc.lower() for loc in target_locations]
-
-    # Try parsing by structured elements first
-    # The page typically has sections per location with class patterns
-    location_blocks = soup.find_all(
-        ["h2", "h3"],
-        string=re.compile("|".join(re.escape(loc) for loc in target_locations), re.I),
+    soup = BeautifulSoup(html_text, "html.parser")
+    location_lookup = {normalize_key(location): location for location in target_locations}
+    meal_lookup = (
+        {normalize_key(meal): meal for meal in target_meals}
+        if target_meals
+        else None
     )
+    menus: dict[str, dict[str, list[str]]] = {}
 
-    if location_blocks:
-        log.info("Found %d location headers in HTML", len(location_blocks))
-        for loc_header in location_blocks:
-            loc_name = None
-            header_text = loc_header.get_text(strip=True)
-            for target in target_locations:
-                if target.lower() in header_text.lower():
-                    loc_name = target
-                    break
-            if not loc_name:
+    location_blocks = soup.select("li.location-name")
+    if not location_blocks:
+        raise ScannerError("Could not find Cal Dining location blocks in the menu page.")
+
+    for block in location_blocks:
+        title_node = block.select_one(".cafe-title")
+        if not title_node:
+            continue
+        page_location = title_node.get_text(" ", strip=True)
+        configured_location = location_lookup.get(normalize_key(page_location))
+        if not configured_location:
+            continue
+
+        for period in block.select("li.preiod-name, li.period-name"):
+            header_node = period.find("span", recursive=False)
+            meal = normalize_meal_name(
+                header_node.get_text(" ", strip=True) if header_node else ""
+            )
+            if not meal:
+                continue
+            configured_meal = meal_lookup.get(normalize_key(meal), meal) if meal_lookup else meal
+            if meal_lookup and normalize_key(meal) not in meal_lookup:
                 continue
 
-            menus[loc_name] = {}
+            items: list[str] = []
+            for recipe in period.select("li.recip"):
+                item_node = recipe.find("span", recursive=False)
+                if not item_node:
+                    continue
+                item_text = item_node.get_text(" ", strip=True)
+                if item_text:
+                    items.append(item_text)
 
-            # Collect sibling elements until next location header
-            sibling = loc_header.find_next_sibling()
-            current_meal = None
-            while sibling:
-                sib_text = sibling.get_text(strip=True)
-                # Check if this is a new location header — stop
-                if sibling.name in ("h2", "h3"):
-                    is_new_loc = any(
-                        t.lower() in sib_text.lower() for t in target_locations
-                    )
-                    if is_new_loc:
-                        break
+            if items:
+                deduped_items = list(dict.fromkeys(items))
+                menus.setdefault(configured_location, {}).setdefault(configured_meal, [])
+                menus[configured_location][configured_meal].extend(deduped_items)
 
-                # Check for meal period headers
-                for meal in ["Breakfast", "Lunch", "Dinner"]:
-                    if meal.lower() in sib_text.lower():
-                        current_meal = meal
-                        if current_meal not in menus[loc_name]:
-                            menus[loc_name][current_meal] = []
-                        break
+    for location, meals in menus.items():
+        for meal, items in meals.items():
+            meals[meal] = list(dict.fromkeys(items))
 
-                # Collect menu items — typically in list items, spans, or divs
-                if current_meal:
-                    items = sibling.find_all(["li", "span", "div", "p"])
-                    for item in items:
-                        item_text = item.get_text(strip=True)
-                        # Filter out non-food text
-                        if (
-                            item_text
-                            and len(item_text) > 1
-                            and len(item_text) < 200
-                            and not any(
-                                skip in item_text.lower()
-                                for skip in [
-                                    "a.m.",
-                                    "p.m.",
-                                    "now open",
-                                    "closed",
-                                    "spring -",
-                                    "summer -",
-                                    "fall -",
-                                    "filter",
-                                    "menu",
-                                    "location",
-                                ]
-                            )
-                        ):
-                            menus[loc_name][current_meal].append(item_text)
+    total_items = sum(len(items) for meals in menus.values() for items in meals.values())
+    if total_items == 0:
+        raise ScannerError(
+            "Parsed zero menu items. The Cal Dining page structure may have changed, "
+            "or the configured locations/meals are not available today."
+        )
 
-                sibling = sibling.find_next_sibling()
-
-    # Fallback: text-based parsing if structured parsing yields nothing
-    if not any(meals for meals in menus.values() if any(meals.values())):
-        log.info("Structured parsing found no items, falling back to text parsing")
-        menus = _parse_by_text(soup, target_locations)
-
-    # Deduplicate items
-    for loc in menus:
-        for meal in menus[loc]:
-            menus[loc][meal] = list(dict.fromkeys(menus[loc][meal]))
+    missing_locations = [
+        location for location in target_locations if location not in menus
+    ]
+    if missing_locations:
+        log.warning("No menu items found for configured locations: %s", missing_locations)
 
     return menus
 
 
-def _parse_by_text(soup: BeautifulSoup, target_locations: list[str]) -> dict:
-    """Fallback parser that works on the raw text content of the page."""
-    full_text = soup.get_text("\n", strip=True)
-    lines = [line.strip() for line in full_text.split("\n") if line.strip()]
-
-    menus = {loc: {} for loc in target_locations}
-    current_location = None
-    current_meal = None
-
-    for line in lines:
-        # Check for location
-        for loc in target_locations:
-            if loc.lower() in line.lower() and len(line) < 50:
-                current_location = loc
-                current_meal = None
-                break
-
-        # Check for meal period
-        if current_location:
-            for meal in ["Breakfast", "Lunch", "Dinner"]:
-                if meal.lower() in line.lower() and len(line) < 60:
-                    current_meal = meal
-                    if current_meal not in menus[current_location]:
-                        menus[current_location][current_meal] = []
-                    break
-            else:
-                # Potential food item
-                if (
-                    current_meal
-                    and len(line) > 1
-                    and len(line) < 200
-                    and not any(
-                        skip in line.lower()
-                        for skip in [
-                            "a.m.",
-                            "p.m.",
-                            "now open",
-                            "closed",
-                            "spring -",
-                            "summer -",
-                            "fall -",
-                            "filter",
-                            "menu",
-                            "location",
-                            "date",
-                            "home",
-                            "special note",
-                        ]
-                    )
-                ):
-                    menus[current_location][current_meal].append(line)
-
-    return menus
-
-
-def find_matches(menus: dict, keywords: list[str]) -> dict:
-    """
-    Return matches in the form:
-    {
-        "Crossroads": {
-            "Lunch": [("Pepperoni Pizza", "pizza"), ...],
-        },
-        ...
-    }
-    """
-    matches = {}
+def find_matches(
+    menus: dict[str, dict[str, list[str]]],
+    keywords: list[str],
+) -> dict[str, dict[str, list[tuple[str, str]]]]:
+    matches: dict[str, dict[str, list[tuple[str, str]]]] = {}
+    seen: set[tuple[str, str, str, str]] = set()
     for location, meals in menus.items():
         for meal, items in meals.items():
             for item in items:
-                for kw in keywords:
-                    if kw in item.lower():
+                item_lower = item.lower()
+                for keyword in keywords:
+                    if keyword in item_lower:
+                        match_key = (location, meal, item, keyword)
+                        if match_key in seen:
+                            continue
+                        seen.add(match_key)
                         matches.setdefault(location, {}).setdefault(meal, []).append(
-                            (item, kw)
+                            (item, keyword)
                         )
     return matches
 
 
-def build_email_html(matches: dict) -> str:
+def format_matches_text(matches: dict[str, dict[str, list[tuple[str, str]]]]) -> str:
+    if not matches:
+        return "No keyword matches found."
+
+    lines: list[str] = []
+    for location in sorted(matches):
+        lines.append(location)
+        for meal in sorted(matches[location]):
+            for item, keyword in matches[location][meal]:
+                lines.append(f"  - {meal}: {item} (matched: {keyword})")
+    return "\n".join(lines)
+
+
+def build_email_html(matches: dict[str, dict[str, list[tuple[str, str]]]]) -> str:
     today = datetime.now().strftime("%A, %B %d, %Y")
     html_parts = [
-        f"<h2>Cal Dining Alert &mdash; {today}</h2>",
+        f"<h2>Cal Dining Alert &mdash; {html.escape(today)}</h2>",
         "<p>Foods from your keyword list are being served today:</p>",
     ]
 
     for location in sorted(matches):
-        html_parts.append(f'<h3 style="color:#003262;">&#128205; {location}</h3>')
+        html_parts.append(
+            f'<h3 style="color:#003262;">{html.escape(location)}</h3>'
+        )
         html_parts.append("<ul>")
-        for meal in ["Breakfast", "Lunch", "Dinner"]:
+        for meal in ["Breakfast", "Lunch", "Dinner", "All Day"]:
             if meal in matches[location]:
                 for item, keyword in matches[location][meal]:
                     html_parts.append(
-                        f"<li><b>{meal}:</b> {item} "
-                        f'<span style="color:#888;">(matched: "{keyword}")</span></li>'
+                        f"<li><b>{html.escape(meal)}:</b> {html.escape(item)} "
+                        f'<span style="color:#888;">'
+                        f'(matched: "{html.escape(keyword)}")'
+                        "</span></li>"
                     )
         html_parts.append("</ul>")
 
@@ -273,16 +391,19 @@ def build_email_html(matches: dict) -> str:
     return "\n".join(html_parts)
 
 
-def send_email(config: dict, subject: str, html_body: str):
+def send_email(config: dict[str, Any], subject: str, html_body: str) -> None:
     password = os.environ.get("GMAIL_APP_PASSWORD")
     if not password:
-        log.error("GMAIL_APP_PASSWORD environment variable not set. Cannot send email.")
-        log.info("Email that would have been sent:\nSubject: %s\n%s", subject, html_body)
-        sys.exit(1)
+        raise ScannerError(
+            "GMAIL_APP_PASSWORD is not set. Add it as an environment variable "
+            "or GitHub Actions secret before sending email."
+        )
 
     smtp_cfg = config.get("smtp", {})
-    sender = smtp_cfg.get("sender_email", config["email"])
-    recipient = config["email"]
+    sender = smtp_cfg.get("sender_email", config.get("email"))
+    recipient = config.get("email")
+    if not sender or not recipient:
+        raise ScannerError("Email sender and recipient must be configured.")
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
@@ -290,7 +411,10 @@ def send_email(config: dict, subject: str, html_body: str):
     msg["To"] = recipient
     msg.attach(MIMEText(html_body, "html"))
 
-    with smtplib.SMTP(smtp_cfg.get("server", "smtp.gmail.com"), smtp_cfg.get("port", 587)) as server:
+    with smtplib.SMTP(
+        smtp_cfg.get("server", "smtp.gmail.com"),
+        smtp_cfg.get("port", 587),
+    ) as server:
         server.starttls()
         server.login(sender, password)
         server.sendmail(sender, [recipient], msg.as_string())
@@ -298,37 +422,210 @@ def send_email(config: dict, subject: str, html_body: str):
     log.info("Email sent to %s", recipient)
 
 
-def main():
-    log.info("=== Cal Dining Scanner started ===")
+def parse_schedule_time(value: str) -> time:
+    if not re.fullmatch(r"\d{2}:\d{2}", value):
+        raise ScannerError(f"Schedule time must be HH:MM, got {value!r}.")
+    hour, minute = [int(part) for part in value.split(":")]
+    if hour > 23 or minute > 59:
+        raise ScannerError(f"Schedule time is out of range: {value!r}.")
+    return time(hour=hour, minute=minute)
 
-    config = load_config()
+
+def normalize_days(days: Any) -> set[int]:
+    day_values = normalize_list(days, "schedule.days")
+    if not day_values:
+        raise ScannerError("schedule.days must include at least one day.")
+    indexes: set[int] = set()
+    for day in day_values:
+        key = day.lower()
+        if key not in DAY_INDEX:
+            raise ScannerError(f"Unknown schedule day: {day!r}.")
+        indexes.add(DAY_INDEX[key])
+    return indexes
+
+
+def validate_schedule(schedule: dict[str, Any]) -> None:
+    if not isinstance(schedule, dict):
+        raise ScannerError("schedule must be a mapping.")
+
+    timezone_name = str(schedule.get("timezone", "")).strip()
+    try:
+        ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError as exc:
+        raise ScannerError(f"Unknown schedule timezone: {timezone_name!r}.") from exc
+
+    times = normalize_list(schedule.get("times"), "schedule.times")
+    if not times:
+        raise ScannerError("schedule.times must include at least one HH:MM time.")
+    for schedule_time in times:
+        parse_schedule_time(schedule_time)
+
+    normalize_days(schedule.get("days"))
+    try:
+        window_minutes = int(schedule.get("window_minutes", 20))
+    except ValueError as exc:
+        raise ScannerError("schedule.window_minutes must be an integer.") from exc
+    if window_minutes < 1:
+        raise ScannerError("schedule.window_minutes must be at least 1.")
+    schedule["window_minutes"] = window_minutes
+
+
+def load_state(state_path: Path = STATE_PATH) -> dict[str, Any]:
+    if not state_path.exists():
+        return {"sent_slots": []}
+    try:
+        with open(state_path, encoding="utf-8") as f:
+            state = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ScannerError(f"Could not read state file {state_path}: {exc}") from exc
+    if not isinstance(state, dict):
+        return {"sent_slots": []}
+    state.setdefault("sent_slots", [])
+    return state
+
+
+def save_state(state: dict[str, Any], state_path: Path = STATE_PATH) -> None:
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(state_path, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2, sort_keys=True)
+        f.write("\n")
+
+
+def build_slot_id(slot_date: date, slot_time: time, timezone_name: str) -> str:
+    return f"{slot_date.isoformat()}T{slot_time.strftime('%H:%M')}@{timezone_name}"
+
+
+def due_schedule_slot(
+    schedule: dict[str, Any],
+    state: dict[str, Any],
+    now: datetime | None = None,
+) -> str | None:
+    timezone_name = str(schedule["timezone"])
+    local_tz = ZoneInfo(timezone_name)
+    current = (now or datetime.now(timezone.utc)).astimezone(local_tz)
+    allowed_days = normalize_days(schedule["days"])
+    schedule_times = [parse_schedule_time(value) for value in normalize_list(schedule["times"], "schedule.times")]
+    window = timedelta(minutes=int(schedule.get("window_minutes", 20)))
+    sent_slots = set(state.get("sent_slots", []))
+
+    candidate_dates = [current.date(), (current - timedelta(days=1)).date()]
+    for candidate_date in candidate_dates:
+        if candidate_date.weekday() not in allowed_days:
+            continue
+        for candidate_time in schedule_times:
+            candidate = datetime.combine(candidate_date, candidate_time, tzinfo=local_tz)
+            delta = current - candidate
+            if timedelta(0) <= delta < window:
+                slot_id = build_slot_id(candidate_date, candidate_time, timezone_name)
+                if slot_id not in sent_slots:
+                    return slot_id
+    return None
+
+
+def mark_slot_sent(state: dict[str, Any], slot_id: str) -> None:
+    sent_slots = list(dict.fromkeys(state.get("sent_slots", [])))
+    if slot_id not in sent_slots:
+        sent_slots.append(slot_id)
+    state["sent_slots"] = sent_slots[-200:]
+
+
+def run_scan(
+    config: dict[str, Any],
+    *,
+    dry_run: bool = False,
+    fetcher: Callable[[], str] = fetch_menu_html,
+    email_sender: Callable[[dict[str, Any], str, str], None] = send_email,
+) -> dict[str, dict[str, list[tuple[str, str]]]]:
     keywords = load_keywords(config)
-
     if not keywords:
-        log.warning("No keywords found. Add foods to keywords.txt and try again.")
-        return
+        raise ScannerError("No keywords found. Add foods to keywords.txt or KEYWORDS.")
 
-    html = fetch_menu_html()
-    target_locations = config.get("locations", ["Crossroads", "Foothill", "Clark Kerr"])
-    menus = parse_menus(html, target_locations)
-
+    menu_html = fetcher()
+    menus = parse_menus(menu_html, config["locations"], config["meals"])
     total_items = sum(len(items) for meals in menus.values() for items in meals.values())
     log.info("Parsed %d menu items across %d locations", total_items, len(menus))
 
     matches = find_matches(menus, keywords)
+    log.info("Match preview:\n%s", format_matches_text(matches))
+
+    if dry_run:
+        log.info("Dry run enabled; no email will be sent.")
+        return matches
 
     if matches:
-        total_matches = sum(
-            len(items) for meals in matches.values() for items in meals.values()
-        )
-        log.info("Found %d matches!", total_matches)
-
         subject = "Cal Dining Alert - Foods You Like Today!"
         html_body = build_email_html(matches)
-        send_email(config, subject, html_body)
+        email_sender(config, subject, html_body)
     else:
-        log.info("No keyword matches found today.")
+        log.info("No email sent because there were no keyword matches.")
+    return matches
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Scan Cal Dining menus for keyword matches.")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--run-now",
+        action="store_true",
+        help="Fetch menus and send an email immediately. This is the default mode.",
+    )
+    mode.add_argument(
+        "--scheduled",
+        action="store_true",
+        help="Send only if the configured local schedule is due.",
+    )
+    mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Fetch menus and print matches without sending email.",
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=CONFIG_PATH,
+        help="Path to config YAML. Defaults to config.yaml.",
+    )
+    parser.add_argument(
+        "--state-file",
+        type=Path,
+        default=STATE_PATH,
+        help="Path to scheduled-run state file.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    log.info("=== Cal Dining Scanner started ===")
+
+    try:
+        config = load_config(args.config)
+        dry_run = bool(args.dry_run)
+
+        if args.scheduled:
+            validate_config(config, require_email=False)
+            state = load_state(args.state_file)
+            slot_id = due_schedule_slot(config["schedule"], state)
+            if not slot_id:
+                log.info("No configured schedule is due right now.")
+                return 0
+            log.info("Schedule slot is due: %s", slot_id)
+            validate_config(config, require_email=True)
+            run_scan(config)
+            mark_slot_sent(state, slot_id)
+            save_state(state, args.state_file)
+            return 0
+
+        validate_config(config, require_email=not dry_run)
+        run_scan(config, dry_run=dry_run)
+        return 0
+    except requests.RequestException as exc:
+        log.error("Could not fetch Cal Dining menus: %s", exc)
+        return 1
+    except ScannerError as exc:
+        log.error("%s", exc)
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

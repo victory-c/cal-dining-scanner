@@ -1,0 +1,44 @@
+# Cal Dining Scanner Configuration
+#
+# Copy this file to config.yaml for local use:
+#   cp config.example.yaml config.yaml
+
+# Recipient for alert emails.
+email: "you@example.com"
+
+# Dining halls to monitor. Names must match the Cal Dining menu page.
+locations:
+  - "Crossroads"
+  - "Foothill"
+  - "Clark Kerr"
+
+# Meal periods to check.
+meals:
+  - "Breakfast"
+  - "Lunch"
+  - "Dinner"
+
+# One keyword per line in this file. You can also use a KEYWORDS env var.
+keywords_file: "keywords.txt"
+
+# When running with --scheduled, the script sends only inside this local-time
+# window. GitHub Actions runs every 15 minutes, so exact delivery is best-effort.
+schedule:
+  timezone: "America/Los_Angeles"
+  times:
+    - "07:00"
+  days:
+    - "mon"
+    - "tue"
+    - "wed"
+    - "thu"
+    - "fri"
+    - "sat"
+    - "sun"
+  window_minutes: 20
+
+# Gmail SMTP defaults. The password must come from GMAIL_APP_PASSWORD.
+smtp:
+  server: "smtp.gmail.com"
+  port: 587
+  sender_email: "you@example.com"

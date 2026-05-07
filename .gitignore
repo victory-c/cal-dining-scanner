@@ -1,4 +1,6 @@
 .env
+config.yaml
+.cal_dining_scanner_state.json
 __pycache__/
 *.pyc
 .DS_Store
