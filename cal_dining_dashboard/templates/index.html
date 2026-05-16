@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Cal Dining Scanner — Setup</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {
+      --berkeley-blue: #003262;
+      --california-gold: #FDB515;
+      --ink: #1a1f2c;
+      --muted: #5e6b85;
+      --line: #e3e7ef;
+      --bg: #f6f8fc;
+      --ok: #1f8a3c;
+      --warn: #b35900;
+      --err: #c62828;
+      --card: #ffffff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+      line-height: 1.5;
+    }
+    header {
+      background: var(--berkeley-blue);
+      color: white;
+      padding: 24px 32px;
+      border-bottom: 4px solid var(--california-gold);
+    }
+    header h1 { margin: 0; font-size: 22px; }
+    header p { margin: 4px 0 0; opacity: 0.85; font-size: 14px; }
+    main { max-width: 880px; margin: 24px auto; padding: 0 24px 80px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 24px;
+      margin-bottom: 20px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+    }
+    .card h2 { margin: 0 0 4px; font-size: 17px; }
+    .card .hint { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+    label { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 4px; }
+    input[type="text"], input[type="email"], input[type="password"], input[type="number"], textarea, select {
+      width: 100%;
+      padding: 9px 11px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      font-size: 14px;
+      font-family: inherit;
+      background: #fff;
+    }
+    textarea { min-height: 120px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .checkboxes { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 6px; }
+    .checkboxes label {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-weight: 400; font-size: 14px; margin: 0;
+    }
+    .checkboxes input { margin: 0; }
+    button {
+      background: var(--berkeley-blue);
+      color: white;
+      border: 0;
+      padding: 10px 18px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { filter: brightness(1.1); }
+    button.secondary {
+      background: white;
+      color: var(--berkeley-blue);
+      border: 1px solid var(--berkeley-blue);
+    }
+    button.gold { background: var(--california-gold); color: var(--berkeley-blue); }
+    button:disabled { opacity: 0.5; cursor: progress; }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+    .banner {
+      padding: 10px 14px; border-radius: 6px; font-size: 14px; margin-top: 12px;
+      display: none; white-space: pre-wrap; word-break: break-word;
+    }
+    .banner.show { display: block; }
+    .banner.ok  { background: #e8f5ec; color: var(--ok); border: 1px solid #c4e5cc; }
+    .banner.err { background: #fdecec; color: var(--err); border: 1px solid #f3c2c2; }
+    .banner.warn{ background: #fdf3e3; color: var(--warn); border: 1px solid #f4dfb6; }
+    .pill {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      font-size: 12px; font-weight: 600;
+    }
+    .pill.ok   { background: #e8f5ec; color: var(--ok); }
+    .pill.off  { background: #ececec; color: var(--muted); }
+    code { background: #f0f3f8; padding: 1px 5px; border-radius: 3px; font-size: 13px; }
+    .stack { display: grid; gap: 8px; }
+    .danger-banner {
+      background: #fff8e8; border: 1px solid #f4dfb6; color: var(--warn);
+      padding: 12px 14px; border-radius: 6px; font-size: 13px; margin-top: 10px;
+    }
+    .help-link { color: var(--berkeley-blue); }
+    pre.result { background: #0f1626; color: #f5f7fc; padding: 12px; border-radius: 6px; font-size: 13px; max-height: 280px; overflow: auto; }
+    .small { font-size: 12px; color: var(--muted); }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Cal Dining Scanner — Setup</h1>
+  <p>Configure your alerts, then pick how the scan should run on a schedule.</p>
+</header>
+
+<main>
+  <form id="settings">
+    <div class="card">
+      <h2>1. Email</h2>
+      <p class="hint">Where to send alerts, and the Gmail app password used to send them.</p>
+      <div class="row">
+        <div>
+          <label>Alert email</label>
+          <input type="email" name="email" value="{{ state.email }}" placeholder="you@gmail.com" required>
+        </div>
+        <div>
+          <label>Gmail app password
+            {% if state.has_password %}<span class="pill ok">stored</span>{% else %}<span class="pill off">not set</span>{% endif %}
+          </label>
+          <input type="password" name="gmail_app_password" placeholder="{{ 'leave blank to keep current' if state.has_password else '16-character app password' }}" autocomplete="new-password">
+        </div>
+      </div>
+      <p class="small">
+        Need a password? Create one at <a class="help-link" href="https://myaccount.google.com/apppasswords" target="_blank">myaccount.google.com/apppasswords</a> — your Google account needs 2-step verification enabled.
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>2. Foods to watch</h2>
+      <p class="hint">One per line, case-insensitive. The scanner matches substrings, so <code>pizza</code> hits "Cheese Pizza".</p>
+      <textarea name="keywords" placeholder="pizza&#10;clam chowder&#10;chicken tikka">{{ state.keywords }}</textarea>
+    </div>
+
+    <div class="card">
+      <h2>3. Where & when</h2>
+      <label>Dining halls</label>
+      <div class="checkboxes">
+        {% for loc in state.all_locations %}
+          <label><input type="checkbox" name="locations" value="{{ loc }}" {% if loc in state.locations %}checked{% endif %}> {{ loc }}</label>
+        {% endfor %}
+      </div>
+      <label>Meals</label>
+      <div class="checkboxes">
+        {% for m in state.all_meals %}
+          <label><input type="checkbox" name="meals" value="{{ m }}" {% if m in state.meals %}checked{% endif %}> {{ m }}</label>
+        {% endfor %}
+      </div>
+      <div class="row" style="margin-top: 10px;">
+        <div>
+          <label>Timezone</label>
+          <input type="text" name="timezone" value="{{ state.timezone }}" placeholder="America/Los_Angeles">
+        </div>
+        <div>
+          <label>Times (HH:MM, comma-separated)</label>
+          <input type="text" name="times" value="{{ state.times }}" placeholder="07:00, 17:30">
+        </div>
+      </div>
+      <label>Days</label>
+      <div class="checkboxes">
+        {% for d in state.all_days %}
+          <label><input type="checkbox" name="days" value="{{ d }}" {% if d in state.days %}checked{% endif %}> {{ d }}</label>
+        {% endfor %}
+      </div>
+
+      <div class="actions">
+        <button type="button" id="save-btn">Save settings</button>
+        <button type="button" class="secondary" id="test-btn">Run a test scan (no email)</button>
+      </div>
+      <div id="save-banner" class="banner"></div>
+      <div id="test-banner" class="banner"></div>
+    </div>
+  </form>
+
+  <div class="card">
+    <h2>4. How should it run on schedule?</h2>
+    <p class="hint">Save your settings above first. Then pick one of the runtimes below.</p>
+
+    <div class="stack" style="margin-top: 14px;">
+      <div>
+        <strong>☁ Cloud (GitHub Actions) — recommended</strong>
+        <p class="small" style="margin: 4px 0 8px;">
+          Forks <code>victory-c/cal-dining-scanner</code> under your account, pushes your settings as Actions
+          secrets/variables, and enables the workflow. Runs in GitHub's cloud — your laptop can be off.
+        </p>
+        <label>GitHub fine-grained or classic token <span class="small">(needs <code>repo</code> + <code>workflow</code> scopes)</span></label>
+        <input type="password" id="github_token" placeholder="ghp_... or github_pat_..." autocomplete="off">
+        <p class="small">
+          <a class="help-link" href="{{ token_help_url }}" target="_blank">→ Create a token here</a> (scopes are pre-filled).
+          The token never leaves your machine after this request.
+        </p>
+        <div class="actions">
+          <button type="button" class="gold" id="gh-btn">Configure GitHub Actions</button>
+        </div>
+        <div id="gh-banner" class="banner"></div>
+      </div>
+
+      <hr style="border: 0; border-top: 1px solid var(--line); margin: 10px 0;">
+
+      <div>
+        <strong>💻 Local schedule</strong>
+        <p class="small" style="margin: 4px 0 8px;">
+          Installs a {{ 'launchd agent' if platform == 'darwin' else 'Task Scheduler entry' if platform == 'win32' else 'systemd user timer' }}
+          that runs the scanner every 15 minutes; it sends only when one of your configured slots is due.
+        </p>
+        <div class="danger-banner">
+          ⚠ Your laptop must be powered on and connected to the internet at each scan time.
+          If the machine is asleep or off when a slot fires, that scan is skipped.
+          Use the cloud option above unless you have a reason not to.
+        </div>
+        <p class="small" style="margin-top: 10px;">
+          Status: {% if sched_status.installed %}<span class="pill ok">installed</span>{% else %}<span class="pill off">not installed</span>{% endif %}
+          <span class="small">— {{ sched_status.details }}</span>
+        </p>
+        <div class="actions">
+          <button type="button" class="secondary" id="local-install-btn">Install local schedule</button>
+          <button type="button" class="secondary" id="local-uninstall-btn">Remove local schedule</button>
+        </div>
+        <div id="local-banner" class="banner"></div>
+      </div>
+    </div>
+  </div>
+
+  <p class="small">Config dir: <code>{{ config_path }}</code></p>
+</main>
+
+<script>
+  const form = document.getElementById("settings");
+  const $ = (id) => document.getElementById(id);
+
+  function show(banner, kind, msg) {
+    banner.className = "banner show " + kind;
+    banner.textContent = msg;
+  }
+
+  function withForm(extra = {}) {
+    const fd = new FormData(form);
+    for (const [k, v] of Object.entries(extra)) fd.append(k, v);
+    return fd;
+  }
+
+  async function post(url, fd) {
+    const resp = await fetch(url, { method: "POST", body: fd });
+    return resp.json();
+  }
+
+  function busy(btn, label) {
+    btn.dataset.original = btn.dataset.original || btn.textContent;
+    btn.disabled = true;
+    btn.textContent = label;
+  }
+  function unbusy(btn) {
+    btn.disabled = false;
+    btn.textContent = btn.dataset.original || btn.textContent;
+  }
+
+  $("save-btn").addEventListener("click", async () => {
+    const banner = $("save-banner");
+    busy($("save-btn"), "Saving…");
+    const data = await post("/save", withForm());
+    unbusy($("save-btn"));
+    show(banner, data.ok ? "ok" : "err", data.ok ? data.message : data.error);
+  });
+
+  $("test-btn").addEventListener("click", async () => {
+    const banner = $("test-banner");
+    busy($("test-btn"), "Scanning…");
+    await post("/save", withForm());
+    const data = await post("/test-scan", new FormData());
+    unbusy($("test-btn"));
+    if (data.ok) {
+      show(banner, "ok", "Test scan complete:\n\n" + data.matches);
+    } else {
+      show(banner, "err", data.error);
+    }
+  });
+
+  $("gh-btn").addEventListener("click", async () => {
+    const banner = $("gh-banner");
+    const token = $("github_token").value.trim();
+    if (!token) { show(banner, "err", "Paste a GitHub token first."); return; }
+    busy($("gh-btn"), "Configuring GitHub…");
+    const data = await post("/github/configure", withForm({ github_token: token }));
+    unbusy($("gh-btn"));
+    if (data.ok) {
+      const r = data.result;
+      show(banner, "ok",
+        `Done. Your fork: ${r.repo_url}\nActions: ${r.actions_url}\n\n` +
+        `The first scheduled scan can take up to 15 minutes to fire. ` +
+        `Trigger one immediately by clicking "Run workflow" on the Actions page.`);
+      $("github_token").value = "";
+    } else {
+      show(banner, "err", data.error);
+    }
+  });
+
+  $("local-install-btn").addEventListener("click", async () => {
+    const banner = $("local-banner");
+    busy($("local-install-btn"), "Installing…");
+    const data = await post("/local/install", withForm());
+    unbusy($("local-install-btn"));
+    if (data.ok) {
+      show(banner, "ok", "Local schedule installed. The scanner will run every 15 minutes and send only when a configured slot is due.");
+    } else {
+      show(banner, "err", data.error);
+    }
+  });
+
+  $("local-uninstall-btn").addEventListener("click", async () => {
+    const banner = $("local-banner");
+    busy($("local-uninstall-btn"), "Removing…");
+    const data = await post("/local/uninstall", new FormData());
+    unbusy($("local-uninstall-btn"));
+    show(banner, data.ok ? "ok" : "err", data.ok ? "Local schedule removed." : data.error);
+  });
+</script>
+</body>
+</html>

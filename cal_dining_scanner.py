@@ -34,8 +34,36 @@ log = logging.getLogger(__name__)
 
 MENU_URL = "https://dining.berkeley.edu/menus/"
 PROJECT_ROOT = Path(__file__).resolve().parent
-CONFIG_PATH = PROJECT_ROOT / "config.yaml"
-STATE_PATH = PROJECT_ROOT / ".cal_dining_scanner_state.json"
+
+
+def user_config_dir() -> Path:
+    """Per-OS config dir for pipx/uvx installs. ~/.config/cal-dining-scanner on Linux,
+    ~/Library/Application Support/cal-dining-scanner on macOS, %APPDATA%/cal-dining-scanner on Windows."""
+    import sys
+    if sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    elif sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return base / "cal-dining-scanner"
+
+
+def default_config_path() -> Path:
+    """Prefer ./config.yaml (repo-local dev), else fall back to user config dir."""
+    local = PROJECT_ROOT / "config.yaml"
+    if local.exists():
+        return local
+    return user_config_dir() / "config.yaml"
+
+
+def default_state_path(config_path: Path) -> Path:
+    """State lives next to the config file."""
+    return config_path.parent / ".cal_dining_scanner_state.json"
+
+
+CONFIG_PATH = default_config_path()
+STATE_PATH = default_state_path(CONFIG_PATH)
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "locations": ["Crossroads", "Foothill", "Clark Kerr"],
@@ -141,7 +169,26 @@ def apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
+def load_dotenv(env_path: Path) -> None:
+    """Tiny .env loader. Only sets keys that aren't already in os.environ."""
+    if not env_path.exists():
+        return
+    try:
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+    except OSError:
+        pass
+
+
 def load_config(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
+    load_dotenv(config_path.parent / ".env")
     config = deepcopy(DEFAULT_CONFIG)
     if config_path.exists():
         with open(config_path, encoding="utf-8") as f:
@@ -149,10 +196,11 @@ def load_config(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
         if not isinstance(file_config, dict):
             raise ScannerError(f"{config_path} must contain a YAML mapping.")
         config = deep_merge(config, file_config)
+        config.setdefault("_config_dir", str(config_path.parent))
     elif not has_env_config():
         raise ScannerError(
-            "No config.yaml found. Copy config.example.yaml to config.yaml, "
-            "or set ALERT_EMAIL and other GitHub Actions variables."
+            "No config.yaml found. Run `cal-dining-setup` to launch the setup dashboard, "
+            "or set ALERT_EMAIL and other environment variables."
         )
     return apply_env_overrides(config)
 
@@ -200,10 +248,16 @@ def load_keywords(config: dict[str, Any]) -> list[str]:
     if configured_keywords:
         keywords = configured_keywords
     else:
-        kw_path = PROJECT_ROOT / str(config.get("keywords_file", "keywords.txt"))
+        config_dir = Path(config.get("_config_dir") or PROJECT_ROOT)
+        kw_name = str(config.get("keywords_file", "keywords.txt"))
+        kw_path = Path(kw_name)
+        if not kw_path.is_absolute():
+            kw_path = config_dir / kw_name
+        if not kw_path.exists() and (PROJECT_ROOT / kw_name).exists():
+            kw_path = PROJECT_ROOT / kw_name
         if not kw_path.exists():
             raise ScannerError(
-                f"No keywords found. Create {kw_path.name} or set KEYWORDS."
+                f"No keywords found. Create {kw_path} or set KEYWORDS."
             )
         keywords = []
         with open(kw_path, encoding="utf-8") as f:
@@ -582,16 +636,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=Path,
-        default=CONFIG_PATH,
-        help="Path to config YAML. Defaults to config.yaml.",
+        default=None,
+        help="Path to config YAML. Defaults to ./config.yaml, then the user config dir.",
     )
     parser.add_argument(
         "--state-file",
         type=Path,
-        default=STATE_PATH,
-        help="Path to scheduled-run state file.",
+        default=None,
+        help="Path to scheduled-run state file. Defaults to alongside the config file.",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.config is None:
+        args.config = default_config_path()
+    if args.state_file is None:
+        args.state_file = default_state_path(args.config)
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:

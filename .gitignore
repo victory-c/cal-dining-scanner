@@ -6,3 +6,7 @@ __pycache__/
 .DS_Store
 venv/
 .venv/
+.venv-test/
+build/
+dist/
+*.egg-info/

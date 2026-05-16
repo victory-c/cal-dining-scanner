@@ -9,7 +9,29 @@ Automatically scans [UC Berkeley Dining menus](https://dining.berkeley.edu/menus
 3. Matches menu items against your keywords.
 4. Sends an HTML email when matches are found.
 
-## Quick Start
+## Quick Start (one command)
+
+Install once, then launch the setup dashboard in your browser:
+
+```bash
+pipx install git+https://github.com/victory-c/cal-dining-scanner.git
+cal-dining-setup
+```
+
+Don't have `pipx`? `brew install pipx` on macOS, `python3 -m pip install --user pipx` elsewhere — or `uvx --from git+https://github.com/victory-c/cal-dining-scanner.git cal-dining-setup` if you have [uv](https://docs.astral.sh/uv/).
+
+The dashboard opens at <http://127.0.0.1:8765/>. From there you can:
+
+1. Enter your alert email and Gmail app password.
+2. Pick keywords, dining halls, meals, and a schedule.
+3. Click **Run a test scan** to preview matches against today's menu.
+4. Choose how the scan runs on a schedule:
+   - **☁ Cloud (GitHub Actions, recommended)** — paste a GitHub token, the dashboard forks this repo into your account, pushes your settings as Actions secrets/variables, and enables the workflow. Your laptop can be off.
+   - **💻 Local schedule** — installs a launchd / systemd / Task Scheduler entry that runs every 15 minutes. ⚠ Your computer must be on at scan times.
+
+Settings live in `~/Library/Application Support/cal-dining-scanner/` (macOS), `~/.config/cal-dining-scanner/` (Linux), or `%APPDATA%\cal-dining-scanner\` (Windows).
+
+## Manual Setup (for development or running from source)
 
 ```bash
 git clone https://github.com/victory-c/cal-dining-scanner.git
