@@ -28,6 +28,25 @@ DEFAULT_PORT = 8765
 def create_app() -> Flask:
     app = Flask(__name__, template_folder="templates", static_folder="static")
     app.secret_key = secrets.token_hex(16)
+    app.config["SETUP_CSRF_TOKEN"] = secrets.token_urlsafe(32)
+
+    @app.before_request
+    def require_setup_token():
+        if request.method != "POST":
+            return None
+        submitted = (
+            request.headers.get("X-Setup-Token")
+            or request.form.get("_setup_token")
+        )
+        if not secrets.compare_digest(submitted or "", app.config["SETUP_CSRF_TOKEN"]):
+            return (
+                jsonify({
+                    "ok": False,
+                    "error": "Invalid setup session. Refresh the dashboard and try again.",
+                }),
+                403,
+            )
+        return None
 
     @app.get("/")
     def index() -> str:
@@ -40,6 +59,7 @@ def create_app() -> Flask:
             config_path=str(config_io.config_path()),
             token_help_url=github_setup.TOKEN_HELP_URL,
             platform=sys.platform,
+            csrf_token=app.config["SETUP_CSRF_TOKEN"],
         )
 
     @app.post("/save")

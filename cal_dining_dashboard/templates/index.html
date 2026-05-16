@@ -234,6 +234,7 @@
 
 <script>
   const form = document.getElementById("settings");
+  const setupToken = {{ csrf_token|tojson }};
   const $ = (id) => document.getElementById(id);
 
   function show(banner, kind, msg) {
@@ -248,7 +249,11 @@
   }
 
   async function post(url, fd) {
-    const resp = await fetch(url, { method: "POST", body: fd });
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "X-Setup-Token": setupToken },
+      body: fd
+    });
     return resp.json();
   }
 

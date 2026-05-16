@@ -5,7 +5,9 @@ that tradeoff explicit before calling install().
 """
 from __future__ import annotations
 
+import html
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -21,14 +23,14 @@ class SchedulerError(RuntimeError):
     """User-facing scheduler error."""
 
 
-def scanner_executable() -> str:
-    """Find the cal-dining-scanner CLI shim, or fall back to `python -m cal_dining_scanner`."""
+def scanner_executable() -> list[str]:
+    """Find the cal-dining-scanner CLI shim, or fall back to the current Python file."""
     found = shutil.which("cal-dining-scanner")
     if found:
-        return found
+        return [found]
     # Fall back to the python interpreter that's running us — useful when invoked
     # via `python -m cal_dining_dashboard.app` without pipx in PATH.
-    return f"{sys.executable} {os.fspath(_scanner_module_path())}"
+    return [sys.executable, os.fspath(_scanner_module_path())]
 
 
 def _scanner_module_path() -> Path:
@@ -69,9 +71,11 @@ def _launchd_plist_path() -> Path:
 
 def _launchd_plist_body() -> str:
     config = config_io.config_path()
-    exe = scanner_executable()
-    program_args = exe.split() + ["--scheduled", "--config", str(config)]
-    args_xml = "\n".join(f"      <string>{x}</string>" for x in program_args)
+    program_args = scanner_executable() + ["--scheduled", "--config", str(config)]
+    args_xml = "\n".join(
+        f"      <string>{html.escape(arg, quote=True)}</string>"
+        for arg in program_args
+    )
     log_dir = config_io.config_dir() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     stdout = log_dir / "scheduler.out.log"
@@ -155,15 +159,17 @@ def _status_systemd() -> dict[str, object]:
 
 def _install_systemd() -> dict[str, str]:
     _systemd_dir().mkdir(parents=True, exist_ok=True)
-    exe = scanner_executable()
     config = config_io.config_path()
+    command = shlex.join(
+        scanner_executable() + ["--scheduled", "--config", str(config)]
+    )
     service_body = f"""[Unit]
 Description=Cal Dining Scanner scheduled run
 After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart={exe} --scheduled --config {config}
+ExecStart={command}
 """
     timer_body = f"""[Unit]
 Description=Cal Dining Scanner timer
@@ -215,13 +221,15 @@ def _status_schtasks() -> dict[str, object]:
 
 def _install_schtasks() -> dict[str, str]:
     config = config_io.config_path()
-    exe = scanner_executable()
+    command = subprocess.list2cmdline(
+        scanner_executable() + ["--scheduled", "--config", str(config)]
+    )
     cmd = [
         "schtasks", "/Create", "/F",
         "/TN", LABEL,
         "/SC", "MINUTE",
         "/MO", str(SCHEDULER_INTERVAL_MINUTES),
-        "/TR", f'{exe} --scheduled --config "{config}"',
+        "/TR", command,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
