@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cal-dining-scanner"
+version = "0.2.0"
+description = "Scan UC Berkeley dining menus for foods you like and email yourself alerts."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "victory-c" }]
+keywords = ["berkeley", "dining", "menu", "scraper", "email-alert"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+]
+dependencies = [
+  "requests>=2.31.0",
+  "beautifulsoup4>=4.12.0",
+  "pyyaml>=6.0",
+  "flask>=3.0.0",
+  "pynacl>=1.5.0",
+  "tzdata>=2024.1; sys_platform == 'win32'",
+]
+
+[project.scripts]
+cal-dining-scanner = "cal_dining_scanner:main"
+cal-dining-setup = "cal_dining_dashboard.app:main"
+
+[project.urls]
+Homepage = "https://github.com/victory-c/cal-dining-scanner"
+Issues = "https://github.com/victory-c/cal-dining-scanner/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cal_dining_dashboard"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"cal_dining_scanner.py" = "cal_dining_scanner.py"
+"config.example.yaml" = "cal_dining_dashboard/_resources/config.example.yaml"
+"keywords.txt" = "cal_dining_dashboard/_resources/keywords.txt"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "cal_dining_scanner.py",
+  "cal_dining_dashboard/**",
+  "config.example.yaml",
+  "keywords.txt",
+  "README.md",
+  "LICENSE",
+  "tests/**",
+]
