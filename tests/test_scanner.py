@@ -1,4 +1,5 @@
 import os
+import ssl
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -161,6 +162,31 @@ class ConfigAndEmailTests(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaisesRegex(scanner.ScannerError, "GMAIL_APP_PASSWORD"):
                 scanner.send_email(config, "Subject", "<p>Hello</p>")
+
+    def test_send_email_verifies_smtp_certificate(self):
+        config = {
+            "email": "friend@example.com",
+            "smtp": {
+                "server": "smtp.gmail.com",
+                "port": 587,
+                "sender_email": "friend@example.com",
+            },
+        }
+        with (
+            patch.dict(os.environ, {"GMAIL_APP_PASSWORD": "secret"}),
+            patch("cal_dining_scanner.smtplib.SMTP") as smtp_cls,
+        ):
+            scanner.send_email(config, "Subject", "<p>Hello</p>")
+
+        server = smtp_cls.return_value.__enter__.return_value
+        server.starttls.assert_called_once()
+        context = server.starttls.call_args.kwargs.get("context")
+        self.assertIsInstance(context, ssl.SSLContext)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(context.check_hostname)
+        self.assertTrue(context.get_ca_certs(), "no CA certificates loaded")
+        server.login.assert_called_once_with("friend@example.com", "secret")
+        self.assertIsNotNone(smtp_cls.call_args.kwargs.get("timeout"))
 
     def test_email_html_escapes_matches(self):
         body = scanner.build_email_html(
