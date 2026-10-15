@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import smtplib
+import ssl
 from copy import deepcopy
 from datetime import date, datetime, time, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
@@ -465,11 +466,16 @@ def send_email(config: dict[str, Any], subject: str, html_body: str) -> None:
     msg["To"] = recipient
     msg.attach(MIMEText(html_body, "html"))
 
+    # starttls() without a context skips certificate checks, letting an on-path
+    # attacker read the app password sent by login(). Verify against the CA
+    # bundle requests already uses for the menu fetch.
+    tls_context = ssl.create_default_context(cafile=requests.certs.where())
     with smtplib.SMTP(
         smtp_cfg.get("server", "smtp.gmail.com"),
         smtp_cfg.get("port", 587),
+        timeout=30,
     ) as server:
-        server.starttls()
+        server.starttls(context=tls_context)
         server.login(sender, password)
         server.sendmail(sender, [recipient], msg.as_string())
 

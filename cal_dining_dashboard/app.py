@@ -13,6 +13,7 @@ import sys
 import threading
 import webbrowser
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from flask import Flask, jsonify, render_template, request
 
@@ -23,12 +24,31 @@ from . import config_io, github_setup, local_scheduler
 log = logging.getLogger("cal_dining_dashboard")
 
 DEFAULT_PORT = 8765
+LOOPBACK_HOSTNAMES = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
-def create_app() -> Flask:
+def create_app(bind_host: str | None = None) -> Flask:
     app = Flask(__name__, template_folder="templates", static_folder="static")
     app.secret_key = secrets.token_hex(16)
     app.config["SETUP_CSRF_TOKEN"] = secrets.token_urlsafe(32)
+    allowed_hostnames = set(LOOPBACK_HOSTNAMES)
+    if bind_host:
+        allowed_hostnames.add(_bind_hostname(bind_host))
+
+    @app.before_request
+    def require_local_host():
+        # DNS rebinding makes an attacker's page same-origin with this server, but
+        # the browser still sends the attacker's hostname in Host. Reject it on
+        # every method so GET / can't leak the setup token either.
+        if _hostname(request.host) in allowed_hostnames:
+            return None
+        return (
+            jsonify({
+                "ok": False,
+                "error": "Unrecognized Host header. Open the dashboard at http://127.0.0.1 instead.",
+            }),
+            403,
+        )
 
     @app.before_request
     def require_setup_token():
@@ -141,6 +161,21 @@ def _form_to_settings(form) -> dict:
     }
 
 
+def _hostname(host: str) -> str | None:
+    """'localhost:8765' -> 'localhost', '[::1]:8765' -> '::1'; None if malformed."""
+    try:
+        parts = urlsplit(f"//{host}")
+        parts.port  # raises ValueError for a non-numeric or out-of-range port
+    except ValueError:
+        return None
+    return parts.hostname
+
+
+def _bind_hostname(host: str) -> str:
+    """Normalize a --host value (never has a port) the way _hostname() reports it."""
+    return host.strip().strip("[]").lower()
+
+
 def _keywords_list_from_form(blob: str) -> list[str]:
     return [
         line.strip()
@@ -162,7 +197,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     config_io.ensure_config_dir()
-    app = create_app()
+    if _bind_hostname(args.host) not in LOOPBACK_HOSTNAMES:
+        log.warning(
+            "--host %s makes the setup dashboard reachable from other machines; "
+            "anyone who can open it can change your settings. Use 127.0.0.1 unless you need that.",
+            args.host,
+        )
+    app = create_app(bind_host=args.host)
     url = f"http://{args.host}:{args.port}/"
     log.info("Cal Dining Setup running at %s", url)
     log.info("Config dir: %s", config_io.config_dir())
